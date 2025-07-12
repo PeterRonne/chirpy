@@ -1,14 +1,34 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
+var badwords = map[string]string{
+	"kerfuffle": "****",
+	"sharbert":  "****",
+	"fornax":    "****",
+}
+
 type apiConfig struct {
 	fileserverHits atomic.Int32
+}
+
+type errorResponse struct {
+	ErrorMessage string `json:"error"`
+}
+
+type validateChirpResponse struct {
+	CleanedBody string `json:"cleaned_body"`
+}
+
+type chirpRequest struct {
+	Body string `json:"body"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -57,9 +77,31 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 
-	// mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
+		var req chirpRequest
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&req); err != nil {
+			respondWithError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
 
-	// })
+		if len(req.Body) > 140 {
+			respondWithError(w, http.StatusBadRequest, "chirp is too long")
+			return
+		}
+
+		words := strings.Split(req.Body, " ")
+		msgSlice := make([]string, 0, len(words))
+		for _, word := range words {
+			if val, ok := badwords[strings.ToLower(word)]; ok {
+				word = val
+			}
+			msgSlice = append(msgSlice, word)
+		}
+		cleanedMsg := strings.Join(msgSlice, " ")
+
+		responWithJson(w, http.StatusOK, validateChirpResponse{CleanedBody: cleanedMsg})
+	})
 
 	server := &http.Server{
 		Addr:    ":8080",
@@ -68,4 +110,17 @@ func main() {
 
 	fmt.Println("Server kører på http://localhost:8080")
 	log.Fatal(server.ListenAndServe())
+}
+
+// Helper functions
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	responWithJson(w, code, errorResponse{ErrorMessage: msg})
+}
+
+func responWithJson(w http.ResponseWriter, code int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		http.Error(w, "Failed to encode JSON", http.StatusInternalServerError)
+	}
 }
